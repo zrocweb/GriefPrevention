@@ -16,9 +16,12 @@
     along with this program.  If not, see <http://www.gnu.org/licenses/>.
  */
  
-package me.ryanhamshire.GriefPrevention;
+package me.ryanhamshire.GriefPrevention.tasks;
 
 import java.util.ArrayList;
+
+import me.ryanhamshire.GriefPrevention.BlockSnapshot;
+import me.ryanhamshire.GriefPrevention.GriefPrevention;
 
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -28,7 +31,7 @@ import org.bukkit.entity.Player;
 
 //non-main-thread task which processes world data to repair the unnatural
 //after processing is complete, creates a main thread task to make the necessary changes to the world
-class RestoreNatureProcessingTask implements Runnable 
+public class RestoreNatureProcessingTask implements Runnable 
 {
 	//world information captured from the main thread
 	//will be updated and sent back to main thread to be applied to the world
@@ -178,6 +181,9 @@ class RestoreNatureProcessingTask implements Runnable
 		{
 			for(int z = 1; z < snapshots[0][0].length - 1; z++)
 			{
+				if(this.seaLevel - 2 < 0) {
+					return;
+				}
 				//replace air, lava, or running water at sea level with stone
 				if(this.snapshots[x][this.seaLevel - 2][z].typeId == Material.AIR.getId() || this.snapshots[x][this.seaLevel - 2][z].typeId == Material.LAVA.getId() || (this.snapshots[x][this.seaLevel - 2][z].typeId == Material.WATER.getId() || this.snapshots[x][this.seaLevel - 2][z].data != 0))
 				{
@@ -287,7 +293,11 @@ class RestoreNatureProcessingTask implements Runnable
 		{
 			for(int z = 1; z < snapshots[0][0].length - 1; z++)
 			{
-				for(int y = this.seaLevel - 1; y < snapshots[0].length; y++)
+				int y = this.seaLevel - 1;
+				if(y < 0) {
+					y = 0;
+				}
+				for(; y < snapshots[0].length; y++)
 				{
 					BlockSnapshot block = snapshots[x][y][z];
 					
@@ -524,8 +534,13 @@ class RestoreNatureProcessingTask implements Runnable
 		//fill water depressions
 		do
 		{
-			changed = false;		
-			for(int y = this.seaLevel - 10; y <= this.seaLevel; y++)			
+			changed = false;
+			//Fixes the negative values.
+			int y = this.seaLevel - 10;
+			if(y < 1) {
+				y = 1;
+			}
+			for(; y <= this.seaLevel; y++)			
 			{
 				for(int x = 1; x < snapshots.length - 1; x++)				
 				{
@@ -587,7 +602,11 @@ class RestoreNatureProcessingTask implements Runnable
 		{
 			for(int z = 1; z < snapshots[0][0].length - 1; z++)
 			{
-				for(int y = this.seaLevel - 1; y < snapshots[0].length - 1; y++)
+				int y = this.seaLevel - 1;
+				if(y < 0) {
+					y = 0;
+				}
+				for(; y < snapshots[0].length - 1; y++)
 				{
 					BlockSnapshot block = snapshots[x][y][z];
 					if(block.typeId == Material.STATIONARY_WATER.getId() || block.typeId == Material.STATIONARY_LAVA.getId() ||
@@ -621,7 +640,7 @@ class RestoreNatureProcessingTask implements Runnable
 		return y;
 	}
 	
-	static ArrayList<Integer> getPlayerBlocks(Environment environment, Biome biome) 
+	public static ArrayList<Integer> getPlayerBlocks(Environment environment, Biome biome) 
 	{
 		//NOTE on this list.  why not make a list of natural blocks?
 		//answer: better to leave a few player blocks than to remove too many natural blocks.  remember we're "restoring nature"
@@ -717,7 +736,19 @@ class RestoreNatureProcessingTask implements Runnable
 		playerBlocks.add(Material.WOOD_BUTTON.getId());
 		playerBlocks.add(Material.SKULL.getId());
 		playerBlocks.add(Material.ANVIL.getId());
-		
+		playerBlocks.add(Material.ACTIVATOR_RAIL.getId());
+		playerBlocks.add(Material.QUARTZ_BLOCK.getId());
+		playerBlocks.add(Material.QUARTZ_STAIRS.getId());
+		playerBlocks.add(Material.DROPPER.getId());
+		playerBlocks.add(Material.DAYLIGHT_DETECTOR.getId());
+		playerBlocks.add(Material.REDSTONE_COMPARATOR.getId());
+		playerBlocks.add(Material.REDSTONE_COMPARATOR_OFF.getId());
+		playerBlocks.add(Material.REDSTONE_COMPARATOR_ON.getId());
+		playerBlocks.add(Material.IRON_PLATE.getId());
+		playerBlocks.add(Material.GOLD_PLATE.getId());
+		playerBlocks.add(Material.HOPPER.getId());
+		playerBlocks.add(Material.TRAPPED_CHEST.getId());
+		playerBlocks.add(Material.REDSTONE_BLOCK.getId());
 		
 		//these are unnatural in the standard world, but not in the nether
 		if(environment != Environment.NETHER)
@@ -728,6 +759,7 @@ class RestoreNatureProcessingTask implements Runnable
 			playerBlocks.add(Material.NETHER_BRICK.getId());
 			playerBlocks.add(Material.NETHER_FENCE.getId());
 			playerBlocks.add(Material.NETHER_BRICK_STAIRS.getId());
+			playerBlocks.add(Material.QUARTZ_ORE.getId());
 		}
 		
 		//these are unnatural in the standard and nether worlds, but not in the end
