@@ -22,6 +22,13 @@ import java.io.*;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
+
+import me.ryanhamshire.GriefPrevention.events.ClaimResizeEvent;
+import me.ryanhamshire.GriefPrevention.events.NewClaimCreated;
+import me.ryanhamshire.GriefPrevention.exceptions.WorldNotFoundException;
+import me.ryanhamshire.GriefPrevention.tasks.SecureClaimTask;
+import me.ryanhamshire.GriefPrevention.tasks.SiegeCheckupTask;
+
 import org.bukkit.*;
 import org.bukkit.configuration.file.FileConfiguration;
 import org.bukkit.configuration.file.YamlConfiguration;
@@ -38,7 +45,7 @@ public abstract class DataStore
 	protected ConcurrentHashMap<String, Integer> permissionToBonusBlocksMap = new ConcurrentHashMap<String, Integer>();
 	
 	//in-memory cache for claim data
-	ArrayList<Claim> claims = new ArrayList<Claim>();
+	ClaimArray claims = new ClaimArray();
 	
 	//in-memory cache for messages
 	private String [] messages;
@@ -78,13 +85,20 @@ public abstract class DataStore
 		System.gc();
 	}
 	
-	//removes cached player data from memory
-	synchronized void clearCachedPlayerData(String playerName)
+	/**
+	 * Removes cached player data from memory
+	 * @param playerName
+	 */
+	public synchronized void clearCachedPlayerData(String playerName)
 	{
 		this.playerNameToPlayerDataMap.remove(playerName);
 	}
 	
-	//gets the number of bonus blocks a player has from his permissions
+	/**
+	 * Gets the number of bonus blocks a player has from his permissions
+	 * @param playerName
+	 * @return
+	 */
 	synchronized int getGroupBonusBlocks(String playerName)
 	{
 		int bonusBlocks = 0;
@@ -103,7 +117,12 @@ public abstract class DataStore
 		return bonusBlocks;
 	}
 	
-	//grants a group (players with a specific permission) bonus claim blocks as long as they're still members of the group
+	/**
+	 * Grants a group (players with a specific permission) bonus claim blocks as long as they're still members of the group.
+	 * @param groupName
+	 * @param amount
+	 * @return
+	 */
 	synchronized public int adjustGroupBonusBlocks(String groupName, int amount)
 	{
 		Integer currentValue = this.permissionToBonusBlocksMap.get(groupName);
@@ -120,6 +139,12 @@ public abstract class DataStore
 	
 	abstract void saveGroupBonusBlocks(String groupName, int amount);
 	
+	/**
+	 * Changes the claim's owner.
+	 * @param claim
+	 * @param newOwnerName
+	 * @throws Exception
+	 */
 	synchronized public void changeClaimOwner(Claim claim, String newOwnerName) throws Exception
 	{
 		//if it's a subdivision, throw an exception
@@ -157,7 +182,10 @@ public abstract class DataStore
 		this.savePlayerData(newOwnerName, newOwnerData);
 	}
 
-	//adds a claim to the datastore, making it an effective claim
+	/**
+	 * Adds a claim to the datastore, making it an effective claim.
+	 * @param newClaim
+	 */
 	synchronized void addClaim(Claim newClaim)
 	{
 		//subdivisions are easy
@@ -167,6 +195,13 @@ public abstract class DataStore
 			newClaim.inDataStore = true;
 			this.saveClaim(newClaim);
 			return;
+		}
+		
+		//Get a unique identifier for the claim which will be used to name the file on disk
+		if(newClaim.id == null)
+		{
+			newClaim.id = this.nextClaimID;
+			this.incrementNextClaimID();
 		}
 		
 		//add it and mark it as added
@@ -226,7 +261,7 @@ public abstract class DataStore
 		World world = GriefPrevention.instance.getServer().getWorld(worldName);
 		if(world == null)
 		{
-			throw new Exception("World not found: \"" + worldName + "\"");
+			throw new WorldNotFoundException("World not found: \"" + worldName + "\"");
 		}
 		
 		//convert those numerical strings to integer values
@@ -237,7 +272,10 @@ public abstract class DataStore
 	    return new Location(world, x, y, z);
 	}	
 
-	//saves any changes to a claim to secondary storage
+	/**
+	 * Saves any changes to a claim to secondary storage.
+	 * @param claim
+	 */
 	synchronized public void saveClaim(Claim claim)
 	{
 		//subdivisions don't save to their own files, but instead live in their parent claim's file
@@ -248,7 +286,7 @@ public abstract class DataStore
 			return;
 		}
 		
-		//otherwise get a unique identifier for the claim which will be used to name the file on disk
+		//Get a unique identifier for the claim which will be used to name the file on disk
 		if(claim.id == null)
 		{
 			claim.id = this.nextClaimID;
@@ -263,8 +301,12 @@ public abstract class DataStore
 	//increments the claim ID and updates secondary storage to be sure it's saved
 	abstract void incrementNextClaimID();
 	
-	//retrieves player data from memory or secondary storage, as necessary
-	//if the player has never been on the server before, this will return a fresh player data with default values
+	/**
+	 * Retrieves player data from memory or secondary storage, as necessary.
+	 * If the player has never been on the server before, this will return a fresh player data with default values.
+	 * @param playerName
+	 * @return
+	 */
 	synchronized public PlayerData getPlayerData(String playerName)
 	{
 		//first, look in memory
@@ -296,8 +338,16 @@ public abstract class DataStore
 	
 	abstract PlayerData getPlayerDataFromStorage(String playerName);
 	
+	/**
+	 * Deletes a claim or subdivision
+	 * @param claim
+	 */
+	synchronized public void deleteClaim(Claim claim) {
+		deleteClaim(claim, true);
+	}
+	
 	//deletes a claim or subdivision
-	synchronized public void deleteClaim(Claim claim)
+	synchronized private void deleteClaim(Claim claim, boolean sendevent)
 	{
 		//subdivisions are simple - just remove them from their parent claim and save that claim
 		if(claim.parent != null)
@@ -309,18 +359,11 @@ public abstract class DataStore
 		}
 		
 		//remove from memory
-		for(int i = 0; i < this.claims.size(); i++)
+		claims.removeID(claim.id);
+		claim.inDataStore = false;
+		for(int j = 0; j < claim.children.size(); j++)
 		{
-			if(claims.get(i).id.equals(claim.id))
-			{
-				this.claims.remove(i);
-				claim.inDataStore = false;
-				for(int j = 0; j < claim.children.size(); j++)
-				{
-					claim.children.get(j).inDataStore = false;
-				}
-				break;
-			}
+			claim.children.get(j).inDataStore = false;
 		}
 		
 		//remove from secondary storage
@@ -344,9 +387,13 @@ public abstract class DataStore
 	
 	abstract void deleteClaimFromSecondaryStorage(Claim claim);
 	
-	//gets the claim at a specific location
-	//ignoreHeight = TRUE means that a location UNDER an existing claim will return the claim
-	//cachedClaim can be NULL, but will help performance if you have a reasonable guess about which claim the location is in
+	/**
+	 * Gets the claim at a specific location
+	 * @param location
+	 * @param ignoreHeight TRUE means that a location UNDER an existing claim will return the claim
+	 * @param cachedClaim can be NULL, but will help performance if you have a reasonable guess about which claim the location is in
+	 * @return
+	 */
 	synchronized public Claim getClaimAt(Location location, boolean ignoreHeight, Claim cachedClaim)
 	{
 		//check cachedClaim guess first.  if it's in the datastore and the location is inside it, we're done
@@ -357,10 +404,18 @@ public abstract class DataStore
 		Claim tempClaim = new Claim();
 		tempClaim.lesserBoundaryCorner = location;
 		
-		//otherwise, search all existing claims until we find the right claim
-		for(int i = 0; i < this.claims.size(); i++)
+		//Let's get all the claims in this block's chunk
+		ArrayList<Claim> aclaims = claims.chunkmap.get(getChunk(location));
+		
+		//If there are no claims here, let's return null.
+		if(aclaims == null) {
+			return null;
+		}
+		
+		//otherwise, search all existing claims in the chunk until we find the right claim
+		for(int i = 0; i < aclaims.size(); i++)
 		{
-			Claim claim = this.claims.get(i);
+			Claim claim = aclaims.get(i);
 			
 			//if we reach a claim which is greater than the temp claim created above, there's definitely no claim
 			//in the collection which includes our location
@@ -385,6 +440,56 @@ public abstract class DataStore
 		return null;
 	}
 	
+	/**
+	 * Gets a claim by it's ID.
+	 * @param i The ID of the claim.
+	 * @return null if there is no claim by that ID, otherwise, the claim.
+	 */
+	synchronized public Claim getClaim(long i) {
+		return claims.getID(i);
+	}
+	
+	/**
+	 * Using the claim array to add or delete claims is NOT recommended
+	 * and it should only be used to read claim data.
+	 * @return The Claim Array.
+	 */
+	synchronized public ClaimArray getClaimArray() {
+		return claims;
+	}
+	
+	/**
+	 * Creates a claim.
+	 * If the new claim would overlap an existing claim, returns a failure along with a reference to the existing claim
+	 * otherwise, returns a success along with a reference to the new claim.<br />
+	 * Use ownerName == "" for administrative claims.<br />
+	 * For top level claims, pass parent == NULL<br />
+	 * DOES adjust claim blocks available on success (players can go into negative quantity available)
+	 * Does NOT check a player has permission to create a claim, or enough claim blocks.
+	 * Does NOT check minimum claim size constraints
+	 * Does NOT visualize the new claim for any players	
+	 * @param world
+	 * @param x1
+	 * @param x2
+	 * @param y1
+	 * @param y2
+	 * @param z1
+	 * @param z2
+	 * @param ownerName
+	 * @param parent
+	 * @param id Unless you are overwriting another claim this should be set to null
+	 * @param neverdelete Should this claim be locked against accidental deletion?
+	 * @return
+	 */
+	synchronized public CreateClaimResult createClaim(World world, int x1, int x2, int y1, int y2, int z1, int z2, String ownerName, Claim parent, Long id, boolean neverdelete) {
+		return createClaim(world, x1, x2, y1, y2, z1, z2, ownerName, parent, id, false, null);
+	}
+	
+	@Deprecated
+	synchronized public CreateClaimResult createClaim(World world, int x1, int x2, int y1, int y2, int z1, int z2, String ownerName, Claim parent, Long id) {
+		return createClaim(world, x1, x2, y1, y2, z1, z2, ownerName, parent, id, false);
+	}
+	
 	//creates a claim.
 	//if the new claim would overlap an existing claim, returns a failure along with a reference to the existing claim
 	//otherwise, returns a success along with a reference to the new claim
@@ -394,7 +499,7 @@ public abstract class DataStore
 	//does NOT check a player has permission to create a claim, or enough claim blocks.
 	//does NOT check minimum claim size constraints
 	//does NOT visualize the new claim for any players	
-	synchronized public CreateClaimResult createClaim(World world, int x1, int x2, int y1, int y2, int z1, int z2, String ownerName, Claim parent, Long id)
+	synchronized private CreateClaimResult createClaim(World world, int x1, int x2, int y1, int y2, int z1, int z2, String ownerName, Claim parent, Long id, boolean neverdelete, Claim oldclaim)
 	{
 		CreateClaimResult result = new CreateClaimResult();
 		
@@ -449,7 +554,7 @@ public abstract class DataStore
 			new String [] {},
 			new String [] {},
 			new String [] {},
-			id);
+			id, false);
 		
 		newClaim.parent = parent;
 		
@@ -461,7 +566,19 @@ public abstract class DataStore
 		}
 		else
 		{
-			claimsToCheck = this.claims;
+			ArrayList<String> claimchunks = ClaimArray.getChunks(newClaim);
+			claimsToCheck = new ArrayList<Claim>();
+			for(String chunk : claimchunks) {
+				ArrayList<Claim> chunkclaims = this.claims.chunkmap.get(chunk);
+				if(chunkclaims == null) {
+					continue;
+				}
+				for(Claim claim : chunkclaims) {
+					if(!claimsToCheck.contains(claim)) {
+						claimsToCheck.add(claim);
+					}
+				}
+			}
 		}
 
 		for(int i = 0; i < claimsToCheck.size(); i++)
@@ -472,26 +589,48 @@ public abstract class DataStore
 			if(otherClaim.overlaps(newClaim))
 			{
 				//result = fail, return conflicting claim
-				result.succeeded = false;
+				result.succeeded = CreateClaimResult.Result.ClaimOverlap;
 				result.claim = otherClaim;
 				return result;
 			}
 		}
-		
+		if(oldclaim == null) {
+			NewClaimCreated claimevent = new NewClaimCreated(newClaim);
+			Bukkit.getServer().getPluginManager().callEvent(claimevent);
+			if(claimevent.isCancelled()) {
+				result.succeeded = CreateClaimResult.Result.Canceled;
+				return result;
+			}
+		}else {
+			ClaimResizeEvent claimevent = new ClaimResizeEvent(oldclaim, newClaim);
+			Bukkit.getServer().getPluginManager().callEvent(claimevent);
+			if(claimevent.isCancelled()) {
+				result.succeeded = CreateClaimResult.Result.Canceled;
+				return result;
+			}
+		}
 		//otherwise add this new claim to the data store to make it effective
 		this.addClaim(newClaim);
 		
 		//then return success along with reference to new claim
-		result.succeeded = true;
+		result.succeeded = CreateClaimResult.Result.Success;
 		result.claim = newClaim;
 		return result;
 	}
 	
-	//saves changes to player data to secondary storage.  MUST be called after you're done making changes, otherwise a reload will lose them
+	/**
+	 * saves changes to player data to secondary storage.  
+	 * MUST be called after you're done making changes, otherwise a reload will lose them.
+	 * @param playerName
+	 * @param playerData
+	 */
 	public abstract void savePlayerData(String playerName, PlayerData playerData);
 	
-	//extends a claim to a new depth
-	//respects the max depth config variable
+	/**
+	 * Extends a claim to a new depth while respecting the max depth config variable.
+	 * @param claim The claim to act on.
+	 * @param newDepth The new depth to extend it to.
+	 */
 	synchronized public void extendClaim(Claim claim, int newDepth) 
 	{
 		if(newDepth < GriefPrevention.instance.config_claims_maxDepth) newDepth = GriefPrevention.instance.config_claims_maxDepth;
@@ -499,7 +638,7 @@ public abstract class DataStore
 		if(claim.parent != null) claim = claim.parent;
 		
 		//delete the claim
-		this.deleteClaim(claim);
+		//this.deleteClaim(claim);
 		
 		//re-create it at the new depth
 		claim.lesserBoundaryCorner.setY(newDepth);
@@ -513,11 +652,17 @@ public abstract class DataStore
 		}
 		
 		//save changes
-		this.addClaim(claim);
+		//this.addClaim(claim);
+		saveClaim(claim);
 	}
 
-	//starts a siege on a claim
-	//does NOT check siege cooldowns, see onCooldown() below
+	/**
+	 * Starts a siege on a claim. Does NOT check siege cooldowns, see onCooldown().
+	 * @param attacker The attacker
+	 * @param defender The defending player
+	 * @param defenderClaim The claim being attacked
+	 * @see #onCooldown()
+	 */
 	synchronized public void startSiege(Player attacker, Player defender, Claim defenderClaim)
 	{
 		//fill-in the necessary SiegeData instance
@@ -535,8 +680,13 @@ public abstract class DataStore
 		siegeData.checkupTaskID = GriefPrevention.instance.getServer().getScheduler().scheduleSyncDelayedTask(GriefPrevention.instance, task, 20L * 30);
 	}
 	
-	//ends a siege
-	//either winnerName or loserName can be null, but not both
+	/**
+	 * Ends a siege. Either winnerName or loserName can be null, but not both
+	 * @param siegeData The siege data
+	 * @param winnerName The winner's name
+	 * @param loserName The loser's name
+	 * @param death Was the siege ended by a player's death?
+	 */
 	synchronized public void endSiege(SiegeData siegeData, String winnerName, String loserName, boolean death)
 	{
 		boolean grantAccess = false;
@@ -654,7 +804,13 @@ public abstract class DataStore
 	//timestamp for each siege cooldown to end
 	private HashMap<String, Long> siegeCooldownRemaining = new HashMap<String, Long>();
 
-	//whether or not a sieger can siege a particular victim or claim, considering only cooldowns
+	/**
+	 * whether or not a sieger can siege a particular victim or claim, considering only cooldowns
+	 * @param attacker The attacking player
+	 * @param defender The defending player
+	 * @param defenderClaim The defender's claim
+	 * @return
+	 */
 	synchronized public boolean onCooldown(Player attacker, Player defender, Claim defenderClaim)
 	{
 		Long cooldownEnd = null;
@@ -690,7 +846,11 @@ public abstract class DataStore
 		return false;
 	}
 
-	//extend a siege, if it's possible to do so
+	/**
+	 * extend a siege, if it's possible to do so
+	 * @param player The player to be sieged
+	 * @param claim the claim being sieged
+	 */
 	synchronized void tryExtendSiege(Player player, Claim claim)
 	{
 		PlayerData playerData = this.getPlayerData(player.getName());
@@ -712,16 +872,30 @@ public abstract class DataStore
 		claim.siegeData = playerData.siegeData;
 	}		
 	
-	//deletes all claims owned by a player
-	synchronized public void deleteClaimsForPlayer(String playerName, boolean deleteCreativeClaims)
+	//deletes all claims owned by a player with the exception of locked claims
+	@Deprecated
+	synchronized public void deleteClaimsForPlayer(String playerName, boolean deleteCreativeClaims) {
+		deleteClaimsForPlayer(playerName, deleteCreativeClaims, false);
+	}
+	
+	/**
+	 * Deletes all claims owned by a player
+	 * @param playerName Case SeNsItIvE player name
+	 * @param deleteCreativeClaims Delete all the player's creative claims?
+	 * @param deleteLockedClaims Should we delete claims that have been locked to not delete?
+	 */
+	synchronized public void deleteClaimsForPlayer(String playerName, boolean deleteCreativeClaims, boolean deleteLockedClaims)
 	{
 		//make a list of the player's claims
 		ArrayList<Claim> claimsToDelete = new ArrayList<Claim>();
 		for(int i = 0; i < this.claims.size(); i++)
 		{
 			Claim claim = this.claims.get(i);
-			if(claim.ownerName.equals(playerName) && (deleteCreativeClaims || !GriefPrevention.instance.creativeRulesApply(claim.getLesserBoundaryCorner())))
+			if(claim.ownerName.equals(playerName) && 
+					(deleteCreativeClaims || !GriefPrevention.instance.creativeRulesApply(claim.getLesserBoundaryCorner())) &&
+					(!claim.neverdelete || deleteLockedClaims)) {
 				claimsToDelete.add(claim);
+			}
 		}
 		
 		//delete them one by one
@@ -740,18 +914,27 @@ public abstract class DataStore
 		}					
 	}
 
-	//tries to resize a claim
-	//see CreateClaim() for details on return value
+	/**
+	 * Tries to resize a claim
+	 * @param claim The claim to resize
+	 * @param newx1 corner 1 x
+	 * @param newx2 corner 2 x
+	 * @param newy1 corner 1 y
+	 * @param newy2 corner 2 y
+	 * @param newz1 corner 1 z
+	 * @param newz2 corner 2 z
+	 * @return
+	 */
 	synchronized public CreateClaimResult resizeClaim(Claim claim, int newx1, int newx2, int newy1, int newy2, int newz1, int newz2)
 	{
 		//remove old claim
 		this.deleteClaim(claim);					
 		
 		//try to create this new claim, ignoring the original when checking for overlap
-		CreateClaimResult result = this.createClaim(claim.getLesserBoundaryCorner().getWorld(), newx1, newx2, newy1, newy2, newz1, newz2, claim.ownerName, claim.parent, claim.id);
+		CreateClaimResult result = this.createClaim(claim.getLesserBoundaryCorner().getWorld(), newx1, newx2, newy1, newy2, newz1, newz2, claim.ownerName, claim.parent, claim.id, claim.neverdelete, claim);
 		
 		//if succeeded
-		if(result.succeeded)
+		if(result.succeeded == CreateClaimResult.Result.Success)
 		{
 			//copy permissions from old claim
 			ArrayList<String> builders = new ArrayList<String>();
@@ -771,7 +954,8 @@ public abstract class DataStore
 			
 			for(int i = 0; i < managers.size(); i++)
 			{
-				result.claim.managers.add(managers.get(i));
+				result.claim.addManager(managers.get(i));
+				//result.claim.managers.add(managers.get(i));
 			}
 			
 			//copy subdivisions from old claim
@@ -806,7 +990,8 @@ public abstract class DataStore
 		this.addDefault(defaults, Messages.RespectingClaims, "Now respecting claims.", null);
 		this.addDefault(defaults, Messages.IgnoringClaims, "Now ignoring claims.", null);
 		this.addDefault(defaults, Messages.NoCreativeUnClaim, "You can't unclaim this land.  You can only make this claim larger or create additional claims.", null);
-		this.addDefault(defaults, Messages.SuccessfulAbandon, "Claims abandoned.  You now have {0} available claim blocks.", "0: remaining blocks");
+		this.addDefault(defaults, Messages.SuccessfulAbandonExcludingLocked, "All claims abandoned except for locked claims.  You now have {0} available claim blocks.", "0: remaining blocks");
+		this.addDefault(defaults, Messages.SuccessfulAbandonIncludingLocked, "All claims abandoned including locked claims.  You now have {0} available claim blocks.", "0: remaining blocks");
 		this.addDefault(defaults, Messages.RestoreNatureActivate, "Ready to restore some nature!  Right click to restore nature, and use /BasicClaims to stop.", null);
 		this.addDefault(defaults, Messages.RestoreNatureAggressiveActivate, "Aggressive mode activated.  Do NOT use this underneath anything you want to keep!  Right click to aggressively restore nature, and use /BasicClaims to stop.", null);
 		this.addDefault(defaults, Messages.FillModeActive, "Fill mode activated with radius {0}.  Right click an area to fill.", "0: fill radius");
@@ -838,9 +1023,11 @@ public abstract class DataStore
 		this.addDefault(defaults, Messages.SubdivisionDemo, "Land Claim Help:  http://tinyurl.com/7urdtue", null);
 		this.addDefault(defaults, Messages.DeleteClaimMissing, "There's no claim here.", null);
 		this.addDefault(defaults, Messages.DeletionSubdivisionWarning, "This claim includes subdivisions.  If you're sure you want to delete it, use /DeleteClaim again.", null);
+		this.addDefault(defaults, Messages.DeleteLockedClaimWarning, "This claim is locked.  If you're sure you want to delete it, use /DeleteClaim again.", null);
 		this.addDefault(defaults, Messages.DeleteSuccess, "Claim deleted.", null);
 		this.addDefault(defaults, Messages.CantDeleteAdminClaim, "You don't have permission to delete administrative claims.", null);
-		this.addDefault(defaults, Messages.DeleteAllSuccess, "Deleted all of {0}'s claims.", "0: owner's name");
+		this.addDefault(defaults, Messages.DeleteAllSuccessExcludingLocked, "Deleted all of {0}'s claims excluding locked claims.", "0: owner's name");
+		this.addDefault(defaults, Messages.DeleteAllSuccessIncludingLocked, "Deleted all of {0}'s claims including locked claims.", "0: owner's name");
 		this.addDefault(defaults, Messages.NoDeletePermission, "You don't have permission to delete claims.", null);
 		this.addDefault(defaults, Messages.AllAdminDeleted, "Deleted all administrative claims.", null);
 		this.addDefault(defaults, Messages.AdjustBlocksSuccess, "Adjusted {0}'s bonus claim blocks by {1}.  New total bonus blocks: {2}.", "0: player; 1: adjustment; 2: new total");
@@ -946,6 +1133,7 @@ public abstract class DataStore
 		this.addDefault(defaults, Messages.TooManyEntitiesInClaim, "This claim has too many entities already.  Try enlarging the claim or removing some animals, monsters, paintings, or minecarts.", null);
 		this.addDefault(defaults, Messages.YouHaveNoClaims, "You don't have any land claims.", null);
 		this.addDefault(defaults, Messages.ConfirmFluidRemoval, "Abandoning this claim will remove all your lava and water.  If you're sure, use /AbandonClaim again.", null);
+		this.addDefault(defaults, Messages.ConfirmAbandonLockedClaim, "This claim has been locked.  If you really want to abandon it, use /AbandonClaim again.", null);
 		this.addDefault(defaults, Messages.AutoBanNotify, "Auto-banned {0}({1}).  See logs for details.", null);
 		this.addDefault(defaults, Messages.AdjustGroupBlocksSuccess, "Adjusted bonus claim blocks for players with the {0} permission by {1}.  New total: {2}.", "0: permission; 1: adjustment amount; 2: new total bonus");
 		this.addDefault(defaults, Messages.InvalidPermissionID, "Please specify a player name, or a permission in [brackets].", null);
@@ -968,6 +1156,9 @@ public abstract class DataStore
 		this.addDefault(defaults, Messages.ExplosivesEnabled, "This claim is now vulnerable to explosions.  Use /ClaimExplosions again to re-enable protections.", null);
 		this.addDefault(defaults, Messages.ClaimExplosivesAdvertisement, "To allow explosives to destroy blocks in this land claim, use /ClaimExplosions.", null);
 		this.addDefault(defaults, Messages.PlayerInPvPSafeZone, "That player is in a PvP safe zone.", null);		
+		this.addDefault(defaults, Messages.ClaimLocked, "This claim has been successfully locked against accidental/automatic deletion. Use /unlockclaim to unlock.", null);		
+		this.addDefault(defaults, Messages.ClaimUnlocked, "This claim has been successfully unlocked.", null);				
+		this.addDefault(defaults, Messages.LoginSpamWait, "You must wait {0} more minutes before logging-in again.", null);		
 		
 		//load the config file
 		FileConfiguration config = YamlConfiguration.loadConfiguration(new File(messagesFilePath));
@@ -1031,5 +1222,19 @@ public abstract class DataStore
 		return message;		
 	}
 	
-	abstract void close();	
+	synchronized public Long[] getClaimIds() {
+		return claims.claimmap.keySet().toArray(new Long[claims.claimmap.size()]);
+	}
+	
+	abstract void close();
+
+	public int getClaimsSize() {
+		return claims.size();
+	}
+	
+	private String getChunk(Location loc) {
+		int chunkX = loc.getBlockX() >> 4;
+		int chunkZ = loc.getBlockZ() >> 4;
+		return loc.getWorld().getName() + ";" + chunkX + "," + chunkZ;
+	}
 }

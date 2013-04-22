@@ -27,6 +27,14 @@ import java.util.List;
 import java.util.concurrent.ConcurrentLinkedQueue;
 import java.util.logging.Logger;
 
+import me.ryanhamshire.GriefPrevention.tasks.CleanupUnusedClaimsTask;
+import me.ryanhamshire.GriefPrevention.tasks.DeliverClaimBlocksTask;
+import me.ryanhamshire.GriefPrevention.tasks.EntityCleanupTask;
+import me.ryanhamshire.GriefPrevention.tasks.PlayerRescueTask;
+import me.ryanhamshire.GriefPrevention.tasks.RestoreNatureProcessingTask;
+import me.ryanhamshire.GriefPrevention.tasks.SendPlayerMessageTask;
+import me.ryanhamshire.GriefPrevention.tasks.TreeCleanupTask;
+import me.ryanhamshire.GriefPrevention.visualization.Visualization;
 import net.milkbowl.vault.economy.Economy;
 
 import org.bukkit.ChatColor;
@@ -203,7 +211,7 @@ public class GriefPrevention extends JavaPlugin
 			World world = this.getServer().getWorld(worldName);
 			if(world == null)
 			{
-				AddLogEntry("Error: Claims Configuration: There's no world named \"" + worldName + "\".  Please update your config.yml.");
+				AddLogEntry("Warning: Claims Configuration: There's no world named \"" + worldName + "\".  Please update your config.yml.");
 			}
 			else
 			{
@@ -238,7 +246,7 @@ public class GriefPrevention extends JavaPlugin
 			World world = this.getServer().getWorld(worldName);
 			if(world == null)
 			{
-				AddLogEntry("Error: Claims Configuration: There's no world named \"" + worldName + "\".  Please update your config.yml.");
+				AddLogEntry("Warning: Claims Configuration: There's no world named \"" + worldName + "\".  Please update your config.yml.");
 			}
 			else
 			{
@@ -272,7 +280,7 @@ public class GriefPrevention extends JavaPlugin
 			World world = this.getServer().getWorld(worldName);
 			if(world == null)
 			{
-				AddLogEntry("Error: PvP Configuration: There's no world named \"" + worldName + "\".  Please update your config.yml.");
+				AddLogEntry("Warning: PvP Configuration: There's no world named \"" + worldName + "\".  Please update your config.yml.");
 			}
 			else
 			{
@@ -480,7 +488,7 @@ public class GriefPrevention extends JavaPlugin
 			World world = this.getServer().getWorld(worldName);
 			if(world == null)
 			{
-				AddLogEntry("Error: Siege Configuration: There's no world named \"" + worldName + "\".  Please update your config.yml.");
+				AddLogEntry("Warning: Siege Configuration: There's no world named \"" + worldName + "\".  Please update your config.yml.");
 			}
 			else
 			{
@@ -812,7 +820,11 @@ public class GriefPrevention extends JavaPlugin
 		//abandonallclaims
 		else if(cmd.getName().equalsIgnoreCase("abandonallclaims") && player != null)
 		{
-			if(args.length != 0) return false;
+			if(args.length > 1) return false;
+			boolean deletelocked = false;
+			if(args.length > 0) {
+				deletelocked = Boolean.parseBoolean(args[0]);
+			}
 			
 			if(!GriefPrevention.instance.config_claims_allowUnclaimInCreative && creativeRulesApply(player.getLocation()))
 			{
@@ -832,11 +844,15 @@ public class GriefPrevention extends JavaPlugin
 			}
 			
 			//delete them
-			this.dataStore.deleteClaimsForPlayer(player.getName(), false);
+			this.dataStore.deleteClaimsForPlayer(player.getName(), false, deletelocked);
 			
 			//inform the player
 			int remainingBlocks = playerData.getRemainingClaimBlocks();
-			GriefPrevention.sendMessage(player, TextMode.Success, Messages.SuccessfulAbandon, String.valueOf(remainingBlocks));
+			if(deletelocked) {
+				GriefPrevention.sendMessage(player, TextMode.Success, Messages.SuccessfulAbandonIncludingLocked, String.valueOf(remainingBlocks));
+			}else {
+				GriefPrevention.sendMessage(player, TextMode.Success, Messages.SuccessfulAbandonExcludingLocked, String.valueOf(remainingBlocks));
+			}
 			
 			//revert any current visualization
 			Visualization.Revert(player);
@@ -900,6 +916,38 @@ public class GriefPrevention extends JavaPlugin
 			return true;
 		}
 		
+		//lockclaim
+		else if(cmd.getName().equalsIgnoreCase("lockclaim") && player != null)
+		{
+			//requires exactly one parameter, the other player's name
+			if(args.length != 0) return false;
+			
+			Claim claim = dataStore.getClaimAt(player.getLocation(), true /*ignore height*/, null);
+			if((player.hasPermission("griefprevention.lock") && claim.ownerName.equalsIgnoreCase(player.getName())) || player.hasPermission("griefprevention.adminlock")) {
+				claim.neverdelete = true;
+				dataStore.saveClaim(claim);
+				GriefPrevention.sendMessage(player, TextMode.Success, Messages.ClaimLocked);
+			}
+			
+			return true;
+		}
+		
+		//unlockclaim
+		else if(cmd.getName().equalsIgnoreCase("unlockclaim") && player != null)
+		{
+			//requires exactly one parameter, the other player's name
+			if(args.length != 0) return false;
+			
+			Claim claim = dataStore.getClaimAt(player.getLocation(), true /*ignore height*/, null);
+			if((player.hasPermission("griefprevention.lock") && claim.ownerName.equalsIgnoreCase(player.getName())) || player.hasPermission("griefprevention.adminlock")) {
+				claim.neverdelete = false;
+				dataStore.saveClaim(claim);
+				GriefPrevention.sendMessage(player, TextMode.Success, Messages.ClaimUnlocked);
+			}
+			
+			return true;
+		}
+		
 		//transferclaim <player>
 		else if(cmd.getName().equalsIgnoreCase("transferclaim") && player != null)
 		{
@@ -928,7 +976,7 @@ public class GriefPrevention extends JavaPlugin
 				return true;
 			}
 			
-			//change ownerhsip
+			//change ownership
 			try
 			{
 				this.dataStore.changeClaimOwner(claim, targetPlayer.getName());
@@ -1089,7 +1137,8 @@ public class GriefPrevention extends JavaPlugin
 					else
 					{
 						claim.dropPermission(args[0]);
-						claim.managers.remove(args[0]);
+						claim.removeManager(args[0]);
+						//claim.managers.remove(args[0]);
 					}
 					
 					//save changes
@@ -1133,7 +1182,8 @@ public class GriefPrevention extends JavaPlugin
 					claim.dropPermission(args[0]);
 					if(claim.allowEdit(player) == null)
 					{
-						claim.managers.remove(args[0]);
+						claim.removeManager(args[0]);
+						//claim.managers.remove(args[0]);
 						
 						//beautify for output
 						if(args[0].equals("public"))
@@ -1408,6 +1458,9 @@ public class GriefPrevention extends JavaPlugin
 					{
 						GriefPrevention.sendMessage(player, TextMode.Warn, Messages.DeletionSubdivisionWarning);
 						playerData.warnedAboutMajorDeletion = true;
+					}else if(claim.neverdelete && !playerData.warnedAboutMajorDeletion) {
+						GriefPrevention.sendMessage(player, TextMode.Warn, Messages.DeleteLockedClaimWarning);
+						playerData.warnedAboutMajorDeletion = true;
 					}
 					else
 					{
@@ -1475,8 +1528,8 @@ public class GriefPrevention extends JavaPlugin
 		//deleteallclaims <player>
 		else if(cmd.getName().equalsIgnoreCase("deleteallclaims"))
 		{
-			//requires exactly one parameter, the other player's name
-			if(args.length != 1) return false;
+			//requires one or two parameters, the other player's name and whether to delete locked claims.
+			if(args.length < 1 && args.length > 2) return false;
 			
 			//try to find that player
 			OfflinePlayer otherPlayer = this.resolvePlayer(args[0]);
@@ -1486,10 +1539,19 @@ public class GriefPrevention extends JavaPlugin
 				return true;
 			}
 			
-			//delete all that player's claims
-			this.dataStore.deleteClaimsForPlayer(otherPlayer.getName(), true);
+			boolean deletelocked = false;
+			if(args.length == 2) {
+				deletelocked = Boolean.parseBoolean(args[1]);
+			}
 			
-			GriefPrevention.sendMessage(player, TextMode.Success, Messages.DeleteAllSuccess, otherPlayer.getName());
+			//delete all that player's claims
+			this.dataStore.deleteClaimsForPlayer(otherPlayer.getName(), true, deletelocked);
+			
+			if(deletelocked) {
+				GriefPrevention.sendMessage(player, TextMode.Success, Messages.DeleteAllSuccessIncludingLocked, otherPlayer.getName());
+			}else {
+				GriefPrevention.sendMessage(player, TextMode.Success, Messages.DeleteAllSuccessExcludingLocked, otherPlayer.getName());
+			}
 			if(player != null)
 			{
 				GriefPrevention.AddLogEntry(player.getName() + " deleted all claims belonging to " + otherPlayer.getName() + ".");
@@ -1626,7 +1688,7 @@ public class GriefPrevention extends JavaPlugin
 			}
 			
 			//delete all admin claims
-			this.dataStore.deleteClaimsForPlayer("", true);  //empty string for owner name indicates an administrative claim
+			this.dataStore.deleteClaimsForPlayer("", true, true);  //empty string for owner name indicates an administrative claim
 			
 			GriefPrevention.sendMessage(player, TextMode.Success, Messages.AllAdminDeleted);
 			if(player != null)
@@ -1900,8 +1962,15 @@ public class GriefPrevention extends JavaPlugin
 			return true;
 		}
 		
+		//if the claim is locked, let's warn the player and give them a chance to back out
+		else if(!playerData.warnedAboutMajorDeletion && claim.neverdelete)
+		{			
+			GriefPrevention.sendMessage(player, TextMode.Warn, Messages.ConfirmAbandonLockedClaim);
+			playerData.warnedAboutMajorDeletion = true;
+		}
+		
 		//if the claim has lots of surface water or some surface lava, warn the player it will be cleaned up
-		else if(!playerData.warnedAboutMajorDeletion && claim.hasSurfaceFluids())
+		else if(!playerData.warnedAboutMajorDeletion && claim.hasSurfaceFluids() && claim.parent == null)
 		{			
 			GriefPrevention.sendMessage(player, TextMode.Warn, Messages.ConfirmFluidRemoval);
 			playerData.warnedAboutMajorDeletion = true;
@@ -1910,7 +1979,10 @@ public class GriefPrevention extends JavaPlugin
 		else
 		{
 			//delete it
-			claim.removeSurfaceFluids(null);
+			//Only do water/lava cleanup when it's a top level claim.
+			if(claim.parent == null) {
+				claim.removeSurfaceFluids(null);
+			}
 			this.dataStore.deleteClaim(claim);
 			
 			//if in a creative mode world, restore the claim area
@@ -2049,9 +2121,9 @@ public class GriefPrevention extends JavaPlugin
 			Claim currentClaim = targetClaims.get(i);
 			if(permissionLevel == null)
 			{
-				if(!currentClaim.managers.contains(recipientName))
+				if(!currentClaim.isManager(recipientName))
 				{
-					currentClaim.managers.add(recipientName);
+					currentClaim.addManager(recipientName);
 				}
 			}
 			else
@@ -2415,7 +2487,7 @@ public class GriefPrevention extends JavaPlugin
 	}
 	
 	//sends a color-coded message to a player
-	static void sendMessage(Player player, ChatColor color, Messages messageID, String... args)
+	public static void sendMessage(Player player, ChatColor color, Messages messageID, String... args)
 	{
 		sendMessage(player, color, messageID, 0, args);
 	}
@@ -2428,7 +2500,7 @@ public class GriefPrevention extends JavaPlugin
 	}
 	
 	//sends a color-coded message to a player
-	static void sendMessage(Player player, ChatColor color, String message)
+	public static void sendMessage(Player player, ChatColor color, String message)
 	{
 		if(player == null)
 		{
@@ -2454,7 +2526,7 @@ public class GriefPrevention extends JavaPlugin
 	}
 	
 	//determines whether creative anti-grief rules apply at a location
-	boolean creativeRulesApply(Location location)
+	public boolean creativeRulesApply(Location location)
 	{
 		return this.config_claims_enabledCreativeWorlds.contains(location.getWorld());
 	}
